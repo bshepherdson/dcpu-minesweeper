@@ -7,12 +7,21 @@
 \ - 12x12, 16 mines
 \ - 24x12, 36 mines
 \ Boards are stored as a grid of bitmapped words.
-\ Each cell follows this plan: CFmt ---- ---- -sss
+\ Each cell follows this plan: CFmt d--- ---- -sss
 \ C = concealed flag, set for concealed cells
 \ F = flag flag
 \ m = mine flag
 \ t = touched flag (for flood-clear)
+\ d = dirty flag (for repainting)
 \ sss = surrouning mine count. Set for all cells, even mines.
+
+\ TODO Track satisfaction as a bit on each mine, thereby flood-clear faster.
+\ TODO Indicate progress during flood-fill with a spinner or something.
+\ TODO Bigger sizes, choosing sizes.
+\ TODO User-generated entropy input, as an alternative to the clock.
+\ TODO Nicer death/victory screens
+\ TODO Live timer
+\ TODO Live mine count.
 
 \ Random number generator
 CREATE multiplier  $41c6 , $4e6d ,
@@ -76,6 +85,7 @@ $8000 CONSTANT hidden
 $4000 CONSTANT flagged
 $2000 CONSTANT mine
 $1000 CONSTANT touched
+$0800 CONSTANT dirty
 
 
 \ Neighbours utility - running an xt over all neighbours of a cell.
@@ -110,10 +120,9 @@ VARIABLE (each-neighbour-xt)
 
 \ Board initialization
 : generate-mine ( -- )
-  BEGIN size random dup mine b? WHILE drop REPEAT
-    dup . mine b+ ;
+  BEGIN size random dup mine b? WHILE drop REPEAT   mine b+ ;
 
-: clear-board ( -- )  size 0 DO hidden i b! LOOP ;
+: clear-board ( -- )  size 0 DO hidden dirty or i b! LOOP ;
 : populate-mines  ( -- )  max-mines 0 DO generate-mine LOOP ;
 
 : mine?+ ( n1 ci -- n2 )  mine b? IF 1+ THEN ;
@@ -169,23 +178,15 @@ VARIABLE col
   dup mine    and IF drop vmine   EXIT THEN
   15 and dup 0= IF drop vblank ELSE vnumber + THEN ;
 
-\ Swap the two lines below to make hidden cells transparent for debugging.
-: debug-transparency ( char cell -- char )
-  \ hidden and IF $f0ff and $0700 or THEN ;
-  drop ;
-
-: paint-cell ( ci -- )  dup   b@ dup >char swap
-  debug-transparency   swap >vram ! ;
+: paint-cell ( ci -- )  dup   b@ >char swap >vram ! ;
 
 : show-cursor ( -- ) row @ col @ >index >vram dup @
   $f0ff and $0b00 or swap ! ;
 
-VARIABLE dirty?
-
 : render ( -- )
-  exploded? IF 384 0 DO $0420 i vram + ! LOOP THEN
-  won?      IF 384 0 DO $0220 i vram + ! LOOP THEN
-  size 0 DO i paint-cell LOOP
+  exploded? IF 384 0 DO $0420 i vram + ! LOOP EXIT THEN
+  won?      IF 384 0 DO $0220 i vram + ! LOOP EXIT THEN
+  size 0 DO i dirty b? IF i paint-cell  i dirty b- THEN LOOP
   show-cursor ;
 
 
@@ -196,18 +197,22 @@ VARIABLE dirty?
 130 CONSTANT key-left
 131 CONSTANT key-right
 
-: handler-up    row @ 1-   0         max   row ! ;
-: handler-down  row @ 1+   height 1- min   row ! ;
-: handler-left  col @ 1-   0         max   col ! ;
-: handler-right col @ 1+   width  1- min   col ! ;
+: cursor>index row @ col @ >index ;
+: dirty-cursor ( -- ) cursor>index dirty b+ ;
+
+: handler-up    dirty-cursor   row @ 1-   0         max   row ! ;
+: handler-down  dirty-cursor   row @ 1+   height 1- min   row ! ;
+: handler-left  dirty-cursor   col @ 1-   0         max   col ! ;
+: handler-right dirty-cursor   col @ 1+   width  1- min   col ! ;
 
 \ Space clears the single tile.
-: cursor>index row @ col @ >index ;
-: handler-space cursor>index   dup hidden b-
+: handler-space cursor>index   dup hidden b-   dup dirty b+
   mine b? IF boom EXIT THEN check-win ;
 
 \ F flags as a mine
-: handler-f cursor>index flagged 2dup b? IF b- ELSE b+ THEN
+: handler-f
+  cursor>index dup dirty b+
+  flagged 2dup b? IF b- ELSE b+ THEN
   check-win ;
 
 : flag-count ( n1 ci -- n2 ) flagged b? IF 1+ THEN ;
@@ -224,8 +229,9 @@ CREATE fq max-width max-height * allot
 here CONSTANT fq-top
 VARIABLE fq-tail VARIABLE fq-head
 
-: fq-push ( ci -- ) fq-top fq DO
-  dup i @ = IF UNLOOP EXIT THEN LOOP
+: fq-push ( ci -- )
+  dup touched b? IF drop EXIT THEN
+  dup touched b+
   fq-tail @ !   1 fq-tail +!
   fq-head @ 0= IF fq fq-head ! THEN ;
 : fq-empty? ( -- ? ) fq-head @ fq-tail @ = ;
@@ -237,10 +243,11 @@ VARIABLE fq-tail VARIABLE fq-head
 : maybe-push ( ci -- )
   dup flagged b? IF drop ELSE fq-push THEN ;
 : flood-clear ( ci -- )
+  size 0 DO i touched b- LOOP
   fq-init fq-push ( )
   BEGIN fq-empty? not WHILE
     fq-pop
-    dup hidden b- \ Reveal myself.
+    dup hidden b-   dup dirty b+ \ Reveal myself.
     dup mine b? IF drop   boom EXIT THEN
     dup satisfied? IF
       ['] maybe-push each-neighbour

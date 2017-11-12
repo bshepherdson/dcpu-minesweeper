@@ -11,3 +11,11 @@ descending priority:
 - Time and mine count readouts.
 - Play-again functionality.
 
+
+## Controls
+
+- Arrow keys to move the cursor.
+- Space reveals the single tile under the cursor.
+- F flags as a mine (F again to unflag).
+- C is a flood-clear, that clears all empty tiles, or numbered tiles that are
+  "satisfied" (that is, that have that many flags touching them).
